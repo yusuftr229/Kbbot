@@ -300,7 +300,15 @@ class TimeInputModal(discord.ui.Modal, title='Anket Süresini Belirleyin'):
         )
         embed.set_footer(text=f"Süre: {sure} saniye | Doğru cevap gizli")
         
-        await interaction.response.edit_message(embed=embed, view=quiz_view)
+        # Kurulum akışı (soru/seçenek/süre girme) ephemeral'di; asıl anket
+        # herkesin oy verebilmesi için kanala AÇIK (ephemeral olmayan) bir mesaj olarak gönderilir.
+        await interaction.response.edit_message(
+            content="✅ Anket oluşturuldu ve kanala gönderildi!",
+            embed=None,
+            view=None
+        )
+        quiz_message = await interaction.channel.send(embed=embed, view=quiz_view)
+        quiz_view.message = quiz_message
         
         # Anket bitirme görevi başlat
         asyncio.create_task(quiz_view.finish_quiz(interaction, sure))
@@ -376,8 +384,13 @@ class QuizVotingView(discord.ui.View):
             timestamp=datetime.datetime.now()
         )
         
-        # Mesajı güncelle
-        await interaction.edit_original_response(embed=result_embed, view=None)
+        # Kanaldaki asıl anket mesajını güncelle (artık ephemeral interaction değil, gerçek mesaj)
+        target_message = getattr(self, "message", None)
+        if target_message is not None:
+            await target_message.edit(embed=result_embed, view=None)
+        else:
+            # message referansı yoksa (eski akış), interaction üzerinden dene
+            await interaction.edit_original_response(embed=result_embed, view=None)
         
         # HTML dosyasını sadece anket sahibine DM olarak gönder
         try:
@@ -420,75 +433,13 @@ class QuizVotingView(discord.ui.View):
                 await quiz_owner.send(embed=dm_embed, file=file)
             
         except discord.Forbidden:
-            # DM gönderilemezse kanala bildirim yap
-            await interaction.followup.send(
-                f"<@{self.quiz_owner_id}> DM'iniz kapalı olduğu için HTML raporu gönderilemiyor!", 
-                ephemeral=True
+            # DM gönderilemezse, anketin bulunduğu kanala HERKESİN görebileceği şekilde bildirim yap
+            notify_channel = target_message.channel if target_message is not None else interaction.channel
+            await notify_channel.send(
+                f"<@{self.quiz_owner_id}> DM'iniz kapalı olduğu için HTML raporu gönderilemiyor!"
             )
         except Exception as e:
             print(f"DM gönderme hatası: {e}")
-        finally:
-            # Geçici dosyayı sil
-            if os.path.exists(temp_file_path):
-                os.unlink(temp_file_path)[seçenek_index] += 1
-            
-        toplam_oy = len(self.oylar)
-        
-        # HTML rapor oluştur
-        html_content = self.create_html_report(sonuçlar, toplam_oy)
-        
-        # Geçici dosya oluştur
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
-            f.write(html_content)
-            temp_file_path = f.name
-        
-        # Discord embed güncelle
-        result_embed = discord.Embed(
-            title="📊 ANKET SONUÇLANDI",
-            description=f"**{self.soru}**",
-            color=0x00ff00,
-            timestamp=datetime.datetime.now()
-        )
-        
-        emojis = ['🅰️', '🅱️', '🅾️', '💠']
-        for i, seçenek in enumerate(self.seçenekler):
-            oy_sayısı = sonuçlar[i]
-            yüzde = (oy_sayısı / toplam_oy * 100) if toplam_oy > 0 else 0
-            is_correct = "✅" if i == self.doğru_cevap else "❌"
-            
-            result_embed.add_field(
-                name=f"{emojis[i]} {seçenek} {is_correct}",
-                value=f"**{oy_sayısı}** oy (%{yüzde:.1f})",
-                inline=True
-            )
-            
-        result_embed.add_field(
-            name="📈 İstatistikler", 
-            value=f"Toplam: {toplam_oy} oy\nDoğru Cevap: {self.seçenekler[self.doğru_cevap]}", 
-            inline=False
-        )
-        
-        # Mesajı güncelle
-        await interaction.edit_original_response(embed=result_embed, view=None)
-        
-        # HTML dosyasını DM olarak gönder
-        try:
-            file = discord.File(temp_file_path, filename=f"anket_sonuclari_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.html")
-            
-            dm_embed = discord.Embed(
-                title="📊 Anket Sonuçları",
-                description="Detaylı anket raporunuz hazır!",
-                color=0x00ff00
-            )
-            
-            await interaction.user.send(embed=dm_embed, file=file)
-            
-        except discord.Forbidden:
-            # DM gönderilemezse kanala bildirim yap
-            await interaction.followup.send(
-                f"{interaction.user.mention} DM'iniz kapalı olduğu için HTML raporu gönderilemiyor!", 
-                ephemeral=True
-            )
         finally:
             # Geçici dosyayı sil
             if os.path.exists(temp_file_path):
